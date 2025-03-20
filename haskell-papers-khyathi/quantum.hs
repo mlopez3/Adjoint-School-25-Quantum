@@ -18,3 +18,6 @@ instance Basis Rotation where
 instance Basis Color where
     basis = [Red, Yellow, Blue]
 
+
+instance Basis Integer where
+basis= [0..] -- this means is an infinite list starting from 0 and counting upwards (0, 1, 2, 3, ...).
