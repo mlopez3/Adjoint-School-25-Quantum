@@ -1,6 +1,8 @@
 -- definition of vector --
 import Data.Complex (Complex, conjugate) -- importing complex number type for line 3
 import Prelude hiding (return, (<*>),(>>=)) -- avoid conflicts with haskell using it's own return function from the prelude, allowing us to use our custom return function, and it's definition of <*>
+{-# LANGUAGE Arrows #-}
+import Control.Arrow(first, Arrow)
 class Eq a => Basis a where basis :: [a]   -- Define the class "Basis", saying that every element in "basis" is an instance of "Eq" and is a list of elements of type "a"
 type PA = Complex Double  -- Type alias for Complex Double
 type Vec a = a -> PA  -- A vector of type "a" returns a Complex Double
@@ -92,22 +94,125 @@ o f g a = (f a >>= g)
 
 -- toffoli circuit example --
 
-toffoli :: Lin (Bool,Bool,Bool) (Bool,Bool,Bool)
-toffoli (top,middle,bottom) =
-    let cnot = controlled qnot
-        cphase = controlled phase
-        caphase = controlled (adjoint phase)
-    in hadamard bottom >>= \b1 ->
-        cphase (middle, b1) >>= \(m1,b2) ->
-        cnot (top,m1) >>= \(t1,m2) ->
-        caphase (m2,b2) >>= \(m3,b3) ->
-        cnot (t1,m3) >>= \(t2,m4) ->
-        cphase (t2,b3) >>= \(t3,b4) ->
-        hadamard b4 >>= \b5 ->
-        \ b -> if (t3, m4, b5) == b then 1 else 0
+toffoli :: Lin (Bool,Bool,Bool) (Bool,Bool,Bool) -- defined the toffoli function with a linear type signature, taking a tuple of three boolean values and returning three boolean
+toffoli (top,middle,bottom) = -- three qubits in toffoli gate
+    let cnot = controlled qnot -- controlled not gate
+        cphase = controlled phase -- controlled phase shift gate
+        caphase = controlled (adjoint phase) -- adjoint controlled phase shift gate
+    in hadamard bottom >>= \b1 -> -- hadamard gate applied to bottom qubit, creating a superposition and allowing interferance
+        cphase (middle, b1) >>= \(m1,b2) -> -- cphase is applied to middle and the transformed bottom qubit (initially b1) gives b2
+        cnot (top,m1) >>= \(t1,m2) -> -- cnot gate is applied to top and m1 giving t1 and m2
+        caphase (m2,b2) >>= \(m3,b3) -> -- caphase gate applied t m2 and b2, giving m3 and b3
+        cnot (t1,m3) >>= \(t2,m4) -> -- cnot operation applied to t1 and m3
+        cphase (t2,b3) >>= \(t3,b4) -> -- cphase applied to t2 and b3
+        hadamard b4 >>= \b5 -> -- final hadamard gate applied to b4
+        \ b -> if (t3, m4, b5) == b then 1 else 0 -- checks if final tuple matches b returning 1 if it does and 0 otherwise
+
+
+-- density matrices --
+
+type Dens a = Vec(a,a) -- defines a density matrix as a vector in which each element is indexed by (a,a) which represents the outer product structure
+
+pureD :: Basis a => Vec a -> Dens a -- pureD takes a vector and returns a density matrix, the point of Basis is to ensure that each vector has a well-defined basis
+pureD v = lin2vec (v >*< v) -- computes the outer product of v with itself and then uses lin2vec
+
+lin2vec :: (a-> Vec b) -> Vec(a,b) -- takes in a linear function and outputs a vector indexed over (a,b)
+lin2vec = uncurry -- transforms the function of 2 arguments to a function of single tuple argument
+
+-- superoperators --
+
+type Super a b = (a,a) -> Dens b -- superoperator which maps density matrices to density matrices
+
+lin2super :: (Basis a, Basis b) => Lin a b -> Super a b -- converts a linear map to a superoperator
+lin2super f (a1, a2) = lin2vec(f a1 >*< f a2) -- defining f to be compatible with the outer product
+
+-- tracing and measurement --
+
+trL :: (Basis a, Basis b) => Super(a,b) b -- defines trL, a superoperator that traces out just the a component, leaving only b
+trL ((a1,b1),(a2,b2)) = if a1 == a2 then return (b1,b2) else mzero -- if a1 and a2 are equal, then returns the pair (b1, b2), otherwise returns mzero
+meas :: Basis a => Super a (a,a) -- defines meas, a superoperator that measures a in the computational basis and encodes the result as a density matrix over (a,a)
+meas (a1,a2) = if a1 == a2 then return ((a1,a1),(a1,a1)) else mzero -- if a1 and a2 are equal, it returns ((a1,a1),(a1,a1)), representing classical measurement outcome. if it returns mzero (which happens in the other case), then off-diagonal terms vanish in the measurement basis
+
+
+
+-- superoperators as arrows (note: i skipped the haskell definition of arrows as given in the paper since i kept getting multiple declaration errors for >>>, first and arr) --
+
+arr :: (Basis b, Basis c) => (b -> c) -> Super b c -- takes a function and returns a value of type super
+arr f = fun2lin (\(b1,b2) -> (f b1, f b2)) -- defn of arr function, basically takes a tuple and applies f to each element in it
+
+(>>>) :: (Basis b, Basis c, Basis d) => Super b c -> Super c d -> Super b d -- takes two supers from b to c and c to d and combines them into a new super from b to d
+(>>>) = o -- saying >>> = o, which combines two transformations sequentially
+
+first :: (Basis b, Basis c, Basis d) => Super b c -> Super(b,d)(c,d) -- takes a super type that maps from b to c and returns a new super type that operators on tuples of (b,d) and produces tuples (c,d)
+first f ((b1, d1), (b2, d2)) = permute ((f(b1,b2))<*> (return(d1,d2))) -- <*> combines results of f and passes through permute function
+  where permute v ((b1,b2),(d1,d2)) = v ((b1,d1),(b2,d2)) --  defined permute function to reorder the elements so that it looks as desired for the output
+
+-- we can replace this defn with the code in the toffoli circuit example and write it in terms of this superoperator defn --
+proc :: (Arrow a) => (b -> c) -> a b c
+(-<) :: Super a b -> a -> b
+
+
+e1 :: Super (Bool, a) (Bool, a)
+e1 = proc (a, b) → do
+    r <- lin2super hadamard -≺ a
+    returnA -≺ (r, b)
+
+e2 :: Super (Bool, a) (Bool, a)
+e2 = first (lin2super hadamard)
+
+-- superoperators are probably not monads --
+
+class Arrow a => ArrowApply a where
+    app :: a (a b c, b) c
+
+-- toffoli revisited and redefined --
+
+toffoli1 :: Super (Bool, Bool, Bool) (Bool, Bool, Bool)
+toffoli1 = 
+  let hadS = lin2super hadamard
+      cnotS = lin2super (controlled qnot)
+      cphaseS = lin2super (controlled phase)
+      caphaseS = lin2super (controlled (adjoint phase))
+  in proc (a0, b0, c0) → do
+      c1 <- hadS ≺ c0
+      (b1, c2) <- cphaseS ≺ (b0, c1)
+      (a1, b2) <- cnotS ≺ (a0, b1)
+      (b3, c3) <- caphaseS ≺ (b2, c2)
+      (a2, b4) <- cnotS ≺ (a1, b3)
+      (a3, c4) <- cphaseS ≺ (a2, c3)
+      c5 <- hadS ≺ c4
+      returnA ≺ (a3, b4, c5)
+
+
+
+
+-- teleportation --
+
+alice :: Super (Bool, Bool) (Bool, Bool)
+alice = proc (eprL, q) → do
+    (q1, e1) <- (lin2super (controlled qnot)) -≺ (q, eprL)
+    q2 <- (lin2super hadamard) -≺ q1
+    ((q3, e2), (m1, m2)) <- meas -≺ (q2, e1)
+    (m1', m2') <- trL ((q3, e2), (m1, m2))
+    returnA -≺ (m1', m2')
+
+bob :: Super (Bool, Bool, Bool) Bool
+bob = proc (eprR, m1, m2) → do
+    (m2', e1) <- (lin2super (controlled qnot)) -≺ (m2, eprR)
+    (m1', e2) <- (lin2super (controlled z)) -≺ (m1, e1)
+    q <- trL -≺ ((m1', m2'), e2)
+    returnA -≺ q
+
+
+teleport :: Super (Bool, Bool, Bool) Bool
+teleport = proc (eprL, eprR, q) → do
+    (m1, m2) <- alice -≺ (eprL, q)
+    q <- bob -≺ (eprR, m1, m2)
+    returnA -≺ q
 
 
 -- main function to test program --
+
 main :: IO () 
 main = do
     putStrLn "program compiled successfully"
