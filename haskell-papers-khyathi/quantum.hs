@@ -45,5 +45,15 @@ qUp = unitFM Vertical 1
 -- 2.2 Infinite Types
 
 
-instance Basis Integer where
-basis= [0..] -- this means is an infinite list starting from 0 and counting upwards (0, 1, 2, 3, ...).
+instance Basis Integer 
+    where basis= [0..] -- this means is an infinite list starting from 0 and counting upwards (0, 1, 2, 3, ...).
+
+--A “good” quantum value of type QV Integer would associate a non-zero probability amplitude to just a few unit vectors
+
+qi :: QV Integer
+qi= qv [ (i, 1 / i) |i <- basis, i != 0] 
+
+-- 2.3 Pairs
+
+instance (Basis a, Basis b) => Basis (a, b)
+    where basis= [ (a, b) |a <- basis, b <- basis ]
